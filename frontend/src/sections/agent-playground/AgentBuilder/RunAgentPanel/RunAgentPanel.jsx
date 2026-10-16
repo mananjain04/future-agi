@@ -1,11 +1,13 @@
-import { Box } from "@mui/material";
-import React, { useCallback, useRef, useState, useEffect } from "react";
+import { Box, Divider } from "@mui/material";
+import React, { useCallback, useRef, useState, useEffect, useMemo } from "react";
 import PropTypes from "prop-types";
 import { AgentGraph } from "src/components/AgentGraph";
 import { START_ID, END_ID } from "src/components/AgentGraph/layoutUtils";
 import useResolvedExecution from "../../hooks/useResolvedExecution";
 import { useWorkflowRunStoreShallow } from "../../store";
+import { useAgentPlaygroundStoreShallow } from "../../store/agent-playground-store";
 import NodeOutputDetail from "./NodeOutputDetail";
+import NodeOutputListView from "./NodeOutputListView";
 import ResizablePanels from "src/components/resizablePanels/ResizablePanels";
 import PanelErrorBoundary from "../../components/PanelErrorBoundary";
 
@@ -21,6 +23,7 @@ export default function RunAgentPanel({
   const resizeRef = useRef(null);
   const [isResizing, setIsResizing] = useState(false);
   const isRunning = useWorkflowRunStoreShallow((s) => s.isRunning);
+  const currentAgent = useAgentPlaygroundStoreShallow((s) => s.currentAgent);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
 
   // Reset selected node when a new execution starts
@@ -29,6 +32,56 @@ export default function RunAgentPanel({
       setSelectedNodeId(null);
     }
   }, [executionId]);
+
+  // Transform executed nodes into tree structure for NodeOutputListView
+  const treeNodes = useMemo(() => {
+    if (!executionData?.nodes?.length) return [];
+
+    const result = [];
+    for (const node of executionData.nodes) {
+      const exec = node.nodeExecution || node.node_execution;
+      if (!exec) continue;
+
+      const subGraphNodes = (node.subGraph || node.sub_graph)?.nodes;
+      let children = [];
+      if (subGraphNodes?.length) {
+        for (const inner of subGraphNodes) {
+          const innerExec = inner.nodeExecution || inner.node_execution;
+          if (!innerExec) continue;
+          children.push({
+            id: `${node.id}__${inner.id}`,
+            name:
+              innerExec.node_name ||
+              inner.data?.label ||
+              inner.name ||
+              inner.id,
+            type: innerExec.node_type || inner.type || inner.data?.type,
+            duration:
+              innerExec.duration_seconds != null
+                ? innerExec.duration_seconds * 1000
+                : (inner.duration ?? 0),
+            cost: innerExec.cost ?? inner.cost ?? null,
+            tokens: innerExec.tokens ?? inner.tokens ?? null,
+          });
+        }
+      }
+
+      result.push({
+        id: node.id,
+        name: exec.node_name || node.data?.label || node.name || node.id,
+        type: exec.node_type || node.type || node.data?.type,
+        duration:
+          exec.duration_seconds != null
+            ? exec.duration_seconds * 1000
+            : (node.duration ?? 0),
+        cost: exec.cost ?? node.cost ?? null,
+        tokens: exec.tokens ?? node.tokens ?? null,
+        children: children.length > 0 ? children : undefined,
+      });
+    }
+
+    return result;
+  }, [executionData?.nodes]);
 
   // Auto-select: first executed node during run, last executed node on completion
   useEffect(() => {
@@ -111,6 +164,10 @@ export default function RunAgentPanel({
     setSelectedNodeId(node.id);
   }, []);
 
+  const handleTreeNodeSelect = useCallback((nodeId) => {
+    setSelectedNodeId(typeof nodeId === "string" ? nodeId : nodeId?.id);
+  }, []);
+
   return (
     <Box
       sx={{
@@ -159,15 +216,40 @@ export default function RunAgentPanel({
           />
         }
         rightPanel={
-          <PanelErrorBoundary
-            name="NodeOutputDetail"
-            onRetry={() => setSelectedNodeId(null)}
+          <Box
+            sx={{
+              display: "flex",
+              height: "100%",
+              width: "100%",
+              overflow: "hidden",
+            }}
           >
-            <NodeOutputDetail
-              executionId={resolvedExecutionId}
-              nodeExecutionId={selectedNodeExecutionId}
+            <NodeOutputListView
+              currentAgent={currentAgent}
+              nodes={treeNodes}
+              selectedNodeId={selectedNodeId}
+              onNodeSelect={handleTreeNodeSelect}
             />
-          </PanelErrorBoundary>
+            <Divider orientation="vertical" flexItem />
+            <Box
+              sx={{
+                flex: 1,
+                minWidth: 0,
+                height: "100%",
+                overflow: "hidden",
+              }}
+            >
+              <PanelErrorBoundary
+                name="NodeOutputDetail"
+                onRetry={() => setSelectedNodeId(null)}
+              >
+                <NodeOutputDetail
+                  executionId={resolvedExecutionId}
+                  nodeExecutionId={selectedNodeExecutionId}
+                />
+              </PanelErrorBoundary>
+            </Box>
+          </Box>
         }
       />
     </Box>
